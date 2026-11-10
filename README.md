@@ -1,0 +1,85 @@
+# env-to-eas
+
+[![CI](https://github.com/ym-scripts/env-to-eas/actions/workflows/ci.yml/badge.svg)](https://github.com/ym-scripts/env-to-eas/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+**Keep your Expo cloud builds in sync with your local `.env`.** Pick a `.env` file and this copies every variable in it into an [EAS environment](https://docs.expo.dev/eas/environment-variables/), so `eas build` uses the same values you run locally. Sister of [doppler-to-eas](https://github.com/ym-scripts/doppler-to-eas), for projects that keep secrets in files instead of Doppler.
+
+```bash
+npx github:ym-scripts/env-to-eas --dry-run
+```
+
+```text
+Which .env file?
+  1) .env
+  2) .env.production
+Choose 1-2: 2
+.env.production → EAS "production"
+  · API_SECRET [secret]
+  · EXPO_PUBLIC_API_URL [plaintext]
+  Skipped (empty): FEATURE_FLAG_X
+
+Push 2 variable(s)? Existing EAS variables with the same name are overwritten. [y/N]
+```
+
+- **You choose the file.** Pass it, or pick from the `.env*` files in the folder (`.env.example`, `.sample`, `.template` and `.dist` are ignored).
+- **The environment is guessed from the name**: `.env.production`/`.prod` → production, `.env.staging`/`.preview`/`.test` → preview, `.env.development`/`.dev`/`.local` → development. Otherwise you're asked, or pass `--environment`.
+- **Visibility is set for you.** `EXPO_PUBLIC_*` variables ship inside the app anyway, so they're `plaintext`; everything else is `secret`, which only builds can read.
+- **Values are never printed.** EAS error messages are redacted too.
+- **Asks first.** `--dry-run` changes nothing.
+
+## Requirements
+
+- Node.js 18+
+- EAS CLI, logged in (`npx eas-cli login`). A global `eas` is used if you have one; otherwise `npx eas-cli@latest`.
+- Run it from your Expo project folder (where `app.json` or `app.config.*` lives).
+
+## Usage
+
+```bash
+env-to-eas                                  # pick a file, environment guessed or asked
+env-to-eas .env.production                  # → "production"
+env-to-eas .env --environment development
+env-to-eas .env.staging --only API_URL,SENTRY_DSN
+env-to-eas .env.production --exclude LOCAL_ONLY --dry-run
+```
+
+### Options
+
+| Option | Default | |
+| --- | --- | --- |
+| `-e, --environment` | from the file name | `development`, `preview` or `production` |
+| `--public-prefix P` | `EXPO_PUBLIC_` | Stored as plaintext. Repeatable. |
+| `--visibility V` | `secret` | `secret` or `sensitive` for everything else |
+| `--only K1,K2` | | Only these variables |
+| `--exclude K1,K2` | | Skip these. Repeatable. |
+| `-n, --dry-run` | | Show the plan, push nothing |
+| `-y, --yes` | | Skip the confirmation |
+
+### .env syntax
+
+`KEY=value`, `export KEY=value`, `# comments`, inline comments after unquoted values, `'single'` (literal), `"double"` (with `\n`, `\t`, `\"` escapes, may span lines) and `` `backtick` `` quotes. `${VAR}` references are pushed as written, not expanded. Empty values are skipped.
+
+### Exit codes
+
+`0` success · `1` a variable failed or you cancelled · `2` usage or setup error.
+
+## In CI
+
+```bash
+npx github:ym-scripts/env-to-eas .env.production --yes
+```
+
+Set `EXPO_TOKEN` so EAS is logged in.
+
+## Development
+
+```bash
+npm test
+```
+
+The tests use a fake `eas` in `test/bin`, so nothing is sent to Expo.
+
+## License
+
+MIT © Aghogho Meyoron

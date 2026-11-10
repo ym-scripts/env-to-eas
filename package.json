@@ -1,0 +1,39 @@
+{
+  "name": "env-to-eas",
+  "version": "0.1.0",
+  "description": "Sync a local .env file into an EAS (Expo) environment, with secret/plaintext visibility handled for you",
+  "type": "module",
+  "bin": {
+    "env-to-eas": "env-to-eas.mjs"
+  },
+  "files": [
+    "env-to-eas.mjs"
+  ],
+  "scripts": {
+    "test": "node --test test/env-to-eas.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "dotenv",
+    "eas",
+    "expo",
+    "react-native",
+    "secrets",
+    "environment-variables",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ym-scripts/env-to-eas.git"
+  },
+  "homepage": "https://github.com/ym-scripts/env-to-eas#readme",
+  "bugs": "https://github.com/ym-scripts/env-to-eas/issues",
+  "author": {
+    "name": "Aghogho Meyoron",
+    "email": "youngmayor.dev@gmail.com",
+    "url": "https://youngmayor.mlabs.ng"
+  },
+  "license": "MIT"
+}
