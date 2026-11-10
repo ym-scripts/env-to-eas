@@ -46,15 +46,15 @@ env-to-eas .env.production --exclude LOCAL_ONLY --dry-run
 
 ### Options
 
-| Option | Default | |
-| --- | --- | --- |
-| `-e, --environment` | from the file name | `development`, `preview` or `production` |
-| `--public-prefix P` | `EXPO_PUBLIC_` | Stored as plaintext. Repeatable. |
-| `--visibility V` | `secret` | `secret` or `sensitive` for everything else |
-| `--only K1,K2` | | Only these variables |
-| `--exclude K1,K2` | | Skip these. Repeatable. |
-| `-n, --dry-run` | | Show the plan, push nothing |
-| `-y, --yes` | | Skip the confirmation |
+| Option              | Default            |                                             |
+| ------------------- | ------------------ | ------------------------------------------- |
+| `-e, --environment` | from the file name | `development`, `preview` or `production`    |
+| `--public-prefix P` | `EXPO_PUBLIC_`     | Stored as plaintext. Repeatable.            |
+| `--visibility V`    | `secret`           | `secret` or `sensitive` for everything else |
+| `--only K1,K2`      |                    | Only these variables                        |
+| `--exclude K1,K2`   |                    | Skip these. Repeatable.                     |
+| `-n, --dry-run`     |                    | Show the plan, push nothing                 |
+| `-y, --yes`         |                    | Skip the confirmation                       |
 
 ### .env syntax
 
