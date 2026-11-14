@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, symlin
 import { tmpdir } from 'node:os';
 import { join, dirname, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseDotenv, guessEnvironment } from '../env-to-eas.mjs';
+import { parseDotenv, guessEnvironment, parsePick, buildPlan } from '../env-to-eas.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CLI = join(here, '..', 'env-to-eas.mjs');
@@ -107,4 +107,67 @@ test('runs from a path with a space in it', () => {
   const r = spawnSync(process.execPath, [copy, '--version'], { encoding: 'utf8' });
   assert.equal(r.status, 0);
   assert.match(r.stdout, /\d+\.\d+\.\d+/);
+});
+
+test('reads a pick of one or more options', () => {
+  const o = ['.env', '.env.preview', '.env.production'];
+  assert.deepEqual(parsePick('2', o), ['.env.preview']);
+  assert.deepEqual(parsePick('3,1', o), ['.env', '.env.production']);
+  assert.deepEqual(parsePick('1-2', o), ['.env', '.env.preview']);
+  assert.deepEqual(parsePick('3-2', o), ['.env.preview', '.env.production']);
+  assert.deepEqual(parsePick('1 3', o), ['.env', '.env.production']);
+  assert.deepEqual(parsePick('all', o), o);
+  assert.deepEqual(parsePick('.env.preview', o), ['.env.preview']);
+  assert.equal(parsePick('4', o), null);
+  assert.equal(parsePick('0-2', o), null);
+  assert.equal(parsePick('nope', o), null);
+  assert.equal(parsePick('', o), null);
+});
+
+test('plans per environment; a later file wins, an empty value never erases', () => {
+  const plan = buildPlan([
+    { file: '.env', vars: { A: '1', B: 'base', C: 'keep', EXPO_PUBLIC_X: 'x' }, environments: ['preview', 'production'] },
+    { file: '.env.production', vars: { B: 'prod', C: '' }, environments: ['production'] },
+  ]);
+  assert.deepEqual(plan.map((p) => p.environment), ['preview', 'production']);
+  const prod = Object.fromEntries(plan[1].push.map((v) => [v.name, v]));
+  assert.equal(prod.B.value, 'prod');
+  assert.equal(prod.B.file, '.env.production');
+  assert.equal(prod.C.value, 'keep');
+  assert.equal(prod.EXPO_PUBLIC_X.visibility, 'plaintext');
+  assert.equal(prod.A.visibility, 'secret');
+  assert.deepEqual(plan[1].overridden, [{ name: 'B', from: '.env', by: '.env.production' }]);
+  assert.equal(Object.fromEntries(plan[0].push.map((v) => [v.name, v.value])).B, 'base');
+});
+
+const PREVIEW = 'API_SECRET=preview-secret\nEXPO_PUBLIC_API_URL=https://staging.example.com\n';
+
+test('several files go to the environments their names suggest', () => {
+  const r = run(['.env.production', '.env.preview', '--yes', '--exclude', 'FAIL_ME'], { files: { '.env.production': ENV, '.env.preview': PREVIEW } });
+  assert.equal(r.code, 0, r.out);
+  assert.equal(r.calls.length, 4);
+  assert.ok(r.calls.some((c) => /--name API_SECRET --value preview-secret --environment preview /.test(c)));
+  assert.ok(r.calls.some((c) => /--name API_SECRET --value s3cr3t --environment production /.test(c)));
+  assert.match(r.out, /Pushed 4 variable\(s\) to 2 environment\(s\)/);
+});
+
+test('-e takes a list, repeats and all; every file goes to every environment', () => {
+  const list = run(['.env.production', '--yes', '--only', 'API_SECRET', '-e', 'preview,production'], {});
+  assert.equal(list.code, 0, list.out);
+  assert.deepEqual(list.calls.map((c) => c.match(/--environment (\w+)/)[1]), ['preview', 'production']);
+  const repeat = run(['.env.production', '--yes', '--only', 'API_SECRET', '-e', 'development', '-e', 'production'], {});
+  assert.deepEqual(repeat.calls.map((c) => c.match(/--environment (\w+)/)[1]), ['development', 'production']);
+  const all = run(['.env.production', '--dry-run', '-e', 'all'], {});
+  assert.equal(all.code, 0, all.out);
+  assert.match(all.out, /EAS "development"[\s\S]*EAS "preview"[\s\S]*EAS "production"/);
+  assert.equal(run(['.env.production', '--dry-run', '-e', 'staging'], {}).code, 2);
+});
+
+test('files merged into one environment show which one wins', () => {
+  const r = run(['.env', '.env.production', '--dry-run', '-e', 'production'], { files: { '.env': 'API_SECRET=base\nSHARED=1\n', '.env.production': ENV } });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /\.env \+ \.env\.production → EAS "production"/);
+  assert.match(r.out, /API_SECRET: \.env\.production overrides \.env/);
+  assert.match(r.out, /SHARED \[secret\] from \.env/);
+  assert.doesNotMatch(r.out, /s3cr3t|base/);
 });

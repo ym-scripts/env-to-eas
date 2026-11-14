@@ -3,27 +3,33 @@
 [![CI](https://github.com/ym-scripts/env-to-eas/actions/workflows/ci.yml/badge.svg)](https://github.com/ym-scripts/env-to-eas/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Keep your Expo cloud builds in sync with your local `.env`.** Pick a `.env` file and this copies every variable in it into an [EAS environment](https://docs.expo.dev/eas/environment-variables/), so `eas build` uses the same values you run locally. Sister of [doppler-to-eas](https://github.com/ym-scripts/doppler-to-eas), for projects that keep secrets in files instead of Doppler.
+**Keep your Expo cloud builds in sync with your local `.env` files.** Pick one or more `.env` files and this copies their variables into one or more [EAS environments](https://docs.expo.dev/eas/environment-variables/), so `eas build` uses the same values you run locally. Sister of [doppler-to-eas](https://github.com/ym-scripts/doppler-to-eas), for projects that keep secrets in files instead of Doppler.
 
 ```bash
 npx github:ym-scripts/env-to-eas --dry-run
 ```
 
 ```text
-Which .env file?
+Which .env file(s)?
   1) .env
-  2) .env.production
-Choose 1-2: 2
+  2) .env.preview
+  3) .env.production
+Choose one or more (e.g. 1,3 or 1-3 or all): 2,3
+.env.preview → EAS "preview"
+  · API_SECRET [secret]
+  · EXPO_PUBLIC_API_URL [plaintext]
+
 .env.production → EAS "production"
   · API_SECRET [secret]
   · EXPO_PUBLIC_API_URL [plaintext]
   Skipped (empty): FEATURE_FLAG_X
 
-Push 2 variable(s)? Existing EAS variables with the same name are overwritten. [y/N]
+Push 4 variable(s) to preview, production? Existing EAS variables with the same name are overwritten. [y/N]
 ```
 
-- **You choose the file.** Pass it, or pick from the `.env*` files in the folder (`.env.example`, `.sample`, `.template` and `.dist` are ignored).
-- **The environment is guessed from the name**: `.env.production`/`.prod` → production, `.env.staging`/`.preview`/`.test` → preview, `.env.development`/`.dev`/`.local` → development. Otherwise you're asked, or pass `--environment`.
+- **You choose the files.** Pass one or more, or pick from the `.env*` files in the folder: numbers (`1,3`), a range (`1-3`), names or `all` (`.env.example`, `.sample`, `.template` and `.dist` are ignored).
+- **Environments are guessed from each file's name**: `.env.production`/`.prod` → production, `.env.staging`/`.preview`/`.test` → preview, `.env.development`/`.dev`/`.local` → development. For a file with no hint you're asked, and can pick several. Or pass `--environment` (repeatable, a comma list, or `all`): then every file goes to every listed environment.
+- **Files sent to the same environment are merged** in the order given. A later file wins when both define a variable, and the plan says so (`API_URL: .env.production overrides .env`). An empty value never erases one set by an earlier file, so a shared `.env` plus a per-environment file works.
 - **Visibility is set for you.** `EXPO_PUBLIC_*` variables ship inside the app anyway, so they're `plaintext`; everything else is `secret`, which only builds can read.
 - **Values are never printed.** EAS error messages are redacted too.
 - **Asks first.** `--dry-run` changes nothing.
@@ -37,8 +43,12 @@ Push 2 variable(s)? Existing EAS variables with the same name are overwritten. [
 ## Usage
 
 ```bash
-env-to-eas                                  # pick a file, environment guessed or asked
+env-to-eas                                  # pick file(s), environments guessed or asked
 env-to-eas .env.production                  # → "production"
+env-to-eas .env.preview .env.production     # each to its own environment
+env-to-eas .env -e preview,production       # one file to two environments
+env-to-eas .env .env.production -e production   # shared values, then production overrides
+env-to-eas .env.shared -e all               # development, preview and production
 env-to-eas .env --environment development
 env-to-eas .env.staging --only API_URL,SENTRY_DSN
 env-to-eas .env.production --exclude LOCAL_ONLY --dry-run
@@ -48,7 +58,7 @@ env-to-eas .env.production --exclude LOCAL_ONLY --dry-run
 
 | Option              | Default            |                                             |
 | ------------------- | ------------------ | ------------------------------------------- |
-| `-e, --environment` | from the file name | `development`, `preview` or `production`    |
+| `-e, --environment` | from each file name | `development`, `preview`, `production` or `all`. Repeatable or comma-separated |
 | `--public-prefix P` | `EXPO_PUBLIC_`     | Stored as plaintext. Repeatable.            |
 | `--visibility V`    | `secret`           | `secret` or `sensitive` for everything else |
 | `--only K1,K2`      |                    | Only these variables                        |
@@ -68,6 +78,7 @@ env-to-eas .env.production --exclude LOCAL_ONLY --dry-run
 
 ```bash
 npx github:ym-scripts/env-to-eas .env.production --yes
+npx github:ym-scripts/env-to-eas .env.preview .env.production --yes
 ```
 
 Set `EXPO_TOKEN` so EAS is logged in.
