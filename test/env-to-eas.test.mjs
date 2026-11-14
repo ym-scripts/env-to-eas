@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, symlinkSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -87,4 +87,24 @@ test('ignores example files and needs --yes without a terminal', () => {
 
 test('refuses outside an Expo project', () => {
   assert.equal(run(['--dry-run'], { app: false }).code, 2);
+});
+
+// npx and installed bins start the CLI through a symlink in node_modules/.bin; it must still run.
+test('runs when started through a symlinked bin', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bin-'));
+  const link = join(dir, 'env-to-eas');
+  symlinkSync(CLI, link);
+  const r = spawnSync(process.execPath, [link, '--version'], { encoding: 'utf8' });
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /\d+\.\d+\.\d+/);
+});
+
+test('runs from a path with a space in it', () => {
+  const dir = join(mkdtempSync(join(tmpdir(), 'sp-')), 'with space');
+  mkdirSync(dir);
+  const copy = join(dir, 'env-to-eas.mjs');
+  copyFileSync(CLI, copy);
+  const r = spawnSync(process.execPath, [copy, '--version'], { encoding: 'utf8' });
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /\d+\.\d+\.\d+/);
 });

@@ -11,11 +11,12 @@
  * Copyright (c) 2026 Aghogho Meyoron. MIT License.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const VERSION = '0.1.0';
+const VERSION = '0.1.1';
 const EAS_ENVIRONMENTS = ['development', 'preview', 'production'];
 /** File-name hints: .env.<hint> → EAS environment. */
 const HINTS = {
@@ -255,7 +256,20 @@ async function main() {
   return 0;
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === new URL(import.meta.url).pathname;
+/**
+ * Run only when started as a command, not when imported (the tests import it). Compare real paths:
+ * npx and installed bins start us through a symlink in node_modules/.bin, and a URL pathname keeps
+ * %20 for spaces, so a plain string comparison would silently skip main().
+ */
+function startedAsCommand() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+const isMain = startedAsCommand();
 if (isMain) {
   main().then((code) => process.exit(code), (e) => {
     console.error(red(e.stack || e.message));

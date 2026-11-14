@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## [0.1.1] - 2026-11-14
+
+### Fixed
+- Running with `npx` (or any installed bin) did nothing: the CLI is started through a symlink in `node_modules/.bin`, so the "am I the main module?" check never matched and it exited silently. It now compares real paths.
+- The same check also failed for a path with a space in it (`%20` in the module URL).
+
 ## [0.1.0] - 2026-11-10
 
 ### Added
