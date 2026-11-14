@@ -16,7 +16,7 @@ EMPTY_ONE=
 FAIL_ME=boom-value
 `;
 
-function run(args, { app = true, files = { '.env.production': ENV }, list = null } = {}) {
+function run(args, { app = true, files = { '.env.production': ENV }, list = null, listFail = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'e2e-'));
   if (app) writeFileSync(join(dir, 'app.json'), '{}');
   for (const [n, c] of Object.entries(files)) writeFileSync(join(dir, n), c);
@@ -25,10 +25,11 @@ function run(args, { app = true, files = { '.env.production': ENV }, list = null
   if (list) writeFileSync(listFile, list);
   const r = spawnSync(process.execPath, [CLI, ...args], {
     cwd: dir, encoding: 'utf8', input: '',
-    env: { ...process.env, NO_COLOR: '1', EAS_LOG: log, EAS_LIST: list ? listFile : '', PATH: join(here, 'bin') + delimiter + process.env.PATH },
+    env: { ...process.env, NO_COLOR: '1', EAS_LOG: log, EAS_LIST: list ? listFile : '', EAS_LIST_FAIL: listFail ? '1' : '', PATH: join(here, 'bin') + delimiter + process.env.PATH },
   });
-  const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [];
-  return { code: r.status, out: r.stdout + r.stderr, calls };
+  const all = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) : [];
+  // `calls` are the ones that change EAS; `lists` are the env:list reads made before anything changes.
+  return { code: r.status, out: r.stdout + r.stderr, calls: all.filter((c) => !c.startsWith('env:list')), lists: all.filter((c) => c.startsWith('env:list')) };
 }
 const pushed = (calls, name) => calls.find((c) => c.includes(`--name ${name} `));
 
@@ -199,7 +200,7 @@ test('reads which environments each EAS variable belongs to', () => {
 test('empty variables are skipped by default, also with --yes', () => {
   const r = run(['--yes', '--exclude', 'FAIL_ME'], { list: LIST });
   assert.equal(r.code, 0, r.out);
-  assert.ok(!r.calls.some((c) => c.startsWith('env:delete') || c.startsWith('env:list')));
+  assert.ok(!r.calls.some((c) => c.startsWith('env:delete')));
   assert.ok(!r.calls.some((c) => c.includes('--name EMPTY_ONE ')));
 });
 
@@ -227,4 +228,60 @@ test('sensitive is the default visibility; --visibility secret still works', () 
   const r = run(['--yes', '--only', 'API_SECRET', '--visibility', 'secret']);
   assert.equal(r.code, 0, r.out);
   assert.match(r.calls[0], /--visibility secret /);
+});
+
+// API_SECRET exists for production only; EXPO_PUBLIC_API_URL is one variable shared by preview and production.
+const EXISTING = `Environment: production
+Variables for this project:
+Name          API_SECRET
+Environments  production
+
+———
+
+Name          EXPO_PUBLIC_API_URL
+Environments  preview, production
+`;
+const creates = (calls) => calls.filter((c) => c.startsWith('env:create'));
+
+test('--existing skip leaves variables already in EAS alone', () => {
+  const r = run(['.env.production', '--yes', '--exclude', 'FAIL_ME', '--existing', 'skip'], { list: EXISTING });
+  assert.equal(r.code, 0, r.out);
+  assert.equal(creates(r.calls).length, 0);
+  assert.equal(r.calls.filter((c) => c.startsWith('env:update')).length, 0);
+  assert.match(r.out, /Skipping 2 already in EAS/);
+  assert.match(r.out, /Nothing to push/);
+});
+
+test('existing variables are updated by default; a shared one is separated first so other environments keep theirs', () => {
+  const r = run(['.env.production', '--yes', '--exclude', 'FAIL_ME'], { list: EXISTING });
+  assert.equal(r.code, 0, r.out);
+  assert.equal(creates(r.calls).length, 2);
+  const updates = r.calls.filter((c) => c.startsWith('env:update'));
+  assert.equal(updates.length, 1);
+  assert.match(updates[0], /--variable-name EXPO_PUBLIC_API_URL --variable-environment production --environment preview --scope project --non-interactive/);
+  assert.ok(r.calls.indexOf(updates[0]) < r.calls.findIndex((c) => c.includes('--name EXPO_PUBLIC_API_URL ')), 'detach comes before the create');
+  assert.match(r.out, /EXPO_PUBLIC_API_URL \[plaintext, updated, now separate from preview\]/);
+  assert.match(r.out, /API_SECRET \[sensitive, updated\]/);
+});
+
+test('new variables are marked new; lists are read once per environment', () => {
+  const r = run(['.env.production', '--yes', '--only', 'API_SECRET', '-e', 'preview,production'], {});
+  assert.equal(r.code, 0, r.out);
+  assert.equal(r.lists.length, 2);
+  assert.match(r.out, /API_SECRET \[sensitive, new\]/);
+});
+
+test('if EAS can’t be read, nothing is changed', () => {
+  const r = run(['.env.production', '--yes'], { listFail: true });
+  assert.equal(r.code, 1);
+  assert.equal(r.calls.length, 0);
+  assert.match(r.out, /Couldn’t read the EAS variables for "production".*Nothing was changed/);
+});
+
+test('--existing must be update or skip', () => {
+  assert.equal(run(['--dry-run', '--existing', 'maybe']).code, 2);
+  const dry = run(['--dry-run', '--existing', 'skip']);
+  assert.equal(dry.code, 0, dry.out);
+  assert.equal(dry.lists.length + dry.calls.length, 0);
+  assert.match(dry.out, /already in EAS would be skipped/);
 });

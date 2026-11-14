@@ -26,7 +26,9 @@ Choose one or more (e.g. 1,3 or 1-3 or all): 2,3
 
 1 empty variable(s). EAS can't store empty values. Skip them, or delete them from EAS so it matches your files? [S/d] s
 Empty variables are skipped (pass --empty delete to remove them from EAS instead).
-Push 4 variable(s) in preview, production? Existing EAS variables with the same name are overwritten. [y/N]
+1 already in EAS: API_SECRET (production). Update them or skip them? [U/s] u
+Updating 1 already in EAS.
+Push 4 variable(s) in preview, production (3 new, 1 updated)? [y/N]
 ```
 
 - **You choose the files.** Pass one or more, or pick from the `.env*` files in the folder: numbers (`1,3`), a range (`1-3`), names or `all` (`.env.example`, `.sample`, `.template` and `.dist` are ignored).
@@ -34,8 +36,10 @@ Push 4 variable(s) in preview, production? Existing EAS variables with the same 
 - **Files sent to the same environment are merged** in the order given. A later file wins when both define a variable, and the plan says so (`API_URL: .env.production overrides .env`). An empty value never erases one set by an earlier file, so a shared `.env` plus a per-environment file works.
 - **Visibility is set for you.** `EXPO_PUBLIC_*` variables ship inside the app anyway, so they're `plaintext`; everything else is `sensitive`: masked in logs and the EAS dashboard, but still readable by builds that run outside EAS's servers (local builds, GitHub runners), which can't read `secret` variables. Pass `--visibility secret` if every build runs on EAS.
 - **You choose what happens to empty variables.** EAS can't store an empty value, so an empty variable is either **skipped** (the default) or, with `--empty delete` or `d` at the prompt, the same-named variable is **deleted from EAS** so the environment matches your file. A variable that EAS shares with another environment is never deleted (deleting it would remove it from all of them); the tool says so instead.
+- **You choose what happens to variables already in EAS.** Before anything changes, each environment's variables are read once. If some of yours are already there, you're asked whether to **update** them or **skip** them (`--existing update|skip`; with `--yes` or in CI they're updated).
+- **Other environments are never disturbed.** One EAS variable can serve several environments. Updating it for one would otherwise take it away from the others, so the tool first separates that environment from the shared variable (the others keep their value) and then gives it its own.
 - **Values are never printed.** EAS error messages are redacted too.
-- **Asks first.** `--dry-run` changes nothing.
+- **Asks first.** `--dry-run` changes nothing and doesn't contact EAS. If EAS can't be read (not logged in), nothing is changed.
 
 ## Requirements
 
@@ -56,6 +60,7 @@ env-to-eas .env --environment development
 env-to-eas .env.staging --only API_URL,SENTRY_DSN
 env-to-eas .env.production --exclude LOCAL_ONLY --dry-run
 env-to-eas .env.production --empty delete   # empties remove stale values from EAS
+env-to-eas .env.production --existing skip  # only add what EAS doesn't have yet
 ```
 
 ### Options
@@ -66,6 +71,7 @@ env-to-eas .env.production --empty delete   # empties remove stale values from E
 | `--public-prefix P` | `EXPO_PUBLIC_`     | Stored as plaintext. Repeatable.            |
 | `--visibility V`    | `sensitive`        | `sensitive` or `secret` for everything else |
 | `--empty MODE`      | asked, else `skip` | `skip` or `delete` for empty variables (see above) |
+| `--existing MODE`   | asked, else `update` | `update` or `skip` variables already in EAS |
 | `--only K1,K2`      |                    | Only these variables                        |
 | `--exclude K1,K2`   |                    | Skip these. Repeatable.                     |
 | `-n, --dry-run`     |                    | Show the plan, push nothing                 |

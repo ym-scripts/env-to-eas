@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Fake eas CLI: logs calls; env:create fails for FAIL_ME and echoes its value back;
-# env:list prints $EAS_LIST (a file in `eas env:list --format long` style); env:delete succeeds.
+# env:list prints $EAS_LIST (a file in `eas env:list --format long` style), or fails when
+# $EAS_LIST_FAIL is set; env:delete and env:update succeed.
 [ "$1" = --version ] && { echo "eas-cli/16.0.0"; exit 0; }
 echo "$*" >> "$EAS_LOG"
 case "$1" in
-  env:list) case " $* " in *" --non-interactive "*) echo "Error: Nonexistent flag: --non-interactive" >&2; exit 2 ;; esac
+  env:list) [ -n "$EAS_LIST_FAIL" ] && { echo "Error: not logged in" >&2; exit 1; }
+            case " $* " in *" --non-interactive "*) echo "Error: Nonexistent flag: --non-interactive" >&2; exit 2 ;; esac
             [ -n "$EAS_LIST" ] && [ -f "$EAS_LIST" ] && cat "$EAS_LIST"; exit 0 ;;
-  env:delete) exit 0 ;;
+  env:delete|env:update) exit 0 ;;
 esac
 case " $* " in *" --name FAIL_ME "*) echo "Error: could not save boom-value" >&2; exit 1 ;; esac
 exit 0

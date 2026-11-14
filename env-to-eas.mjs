@@ -17,7 +17,7 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '0.3.0';
+const VERSION = '0.4.0';
 const EAS_ENVIRONMENTS = ['development', 'preview', 'production'];
 /** File-name hints: .env.<hint> → EAS environment. */
 const HINTS = {
@@ -44,6 +44,8 @@ Usage: env-to-eas [files...] [options]
                             variable from EAS so it matches the file; never one EAS
                             shares with another environment). Asked when there are
                             empty variables; skip with --yes or no terminal.
+      --existing MODE       Variables already in EAS: update (overwrite) or skip.
+                            Asked when there are some; update with --yes or no terminal.
       --only K1,K2          Only these variables
       --exclude K1,K2       Skip these variables
   -n, --dry-run             Show what would be pushed, push nothing
@@ -72,7 +74,7 @@ function usageError(message) {
 function parseArgs(argv) {
   const args = {
     files: [], environments: [], publicPrefixes: [], visibility: 'sensitive',
-    only: null, exclude: [], dryRun: false, yes: false, empty: null,
+    only: null, exclude: [], dryRun: false, yes: false, empty: null, existing: null,
   };
   const value = (i, name) => {
     if (i >= argv.length || argv[i].startsWith('-')) usageError(`${name} needs a value`);
@@ -90,6 +92,7 @@ function parseArgs(argv) {
       case '--public-prefix': args.publicPrefixes.push(value(++i, arg)); break;
       case '--visibility': args.visibility = value(++i, arg); break;
       case '--empty': args.empty = value(++i, arg).toLowerCase(); break;
+      case '--existing': args.existing = value(++i, arg).toLowerCase(); break;
       case '--only': args.only = csv(value(++i, arg)); break;
       case '--exclude': args.exclude.push(...csv(value(++i, arg))); break;
       case '-n': case '--dry-run': args.dryRun = true; break;
@@ -103,6 +106,7 @@ function parseArgs(argv) {
   }
   if (!args.publicPrefixes.length) args.publicPrefixes = ['EXPO_PUBLIC_'];
   if (args.empty && !['skip', 'delete'].includes(args.empty)) usageError('--empty must be skip or delete');
+  if (args.existing && !['update', 'skip'].includes(args.existing)) usageError('--existing must be update or skip');
   if (!['secret', 'sensitive'].includes(args.visibility)) usageError('--visibility must be sensitive or secret');
   if (args.environments.includes('all')) args.environments = [...EAS_ENVIRONMENTS];
   const bad = args.environments.filter((e) => !EAS_ENVIRONMENTS.includes(e));
@@ -324,55 +328,97 @@ async function main() {
   const deletes = emptyMode === 'delete' ? empties : 0;
 
   if (args.dryRun) {
-    console.log(`Dry run: ${total} variable(s) would be pushed${deletes ? ` and up to ${deletes} deleted` : ''} in ${plan.length} environment(s). Nothing was changed.`);
+    const existingNote = args.existing === 'skip' ? 'skipped' : args.existing === 'update' ? 'updated' : 'updated or skipped (you’d be asked)';
+    console.log(`Dry run: ${total} variable(s) would be pushed${deletes ? ` and up to ${deletes} deleted` : ''} in ${plan.length} environment(s); ones already in EAS would be ${existingNote}. Nothing was changed, and EAS wasn’t contacted.`);
     return 0;
   }
   if (!total && !deletes) {
     console.log('Nothing to push.');
     return 0;
   }
+
+  if (!args.yes && !process.stdin.isTTY) usageError('No terminal to confirm on. Pass --yes to push without a prompt.');
+
+  // Read what each environment already has, once: for update-or-skip, for deletes, and because one
+  // EAS variable can serve several environments (see pushOne).
+  const [eas, easPrefix] = easCommand();
+  const inEas = {};
+  for (const { environment } of plan) {
+    const listed = run(eas, [...easPrefix, 'env:list', '--environment', environment, '--format', 'long', '--scope', 'project']);
+    if (listed.status !== 0) {
+      const why = `${listed.stderr ?? ''}${listed.stdout ?? ''}`.trim().split('\n').slice(-2).join(' ');
+      console.error(`${red('✖')} Couldn’t read the EAS variables for "${environment}"${why ? `: ${why}` : ''}. Are you logged in? Run: npx eas-cli login. Nothing was changed.`);
+      return 1;
+    }
+    inEas[environment] = parseEasList(listed.stdout);
+  }
+
+  const existing = plan.flatMap((p) => p.push.filter((v) => inEas[p.environment][v.name]).map((v) => `${v.name}${plan.length > 1 ? ` (${p.environment})` : ''}`));
+  let existingMode = args.existing ?? 'update';
+  if (existing.length && !args.existing && !args.yes && process.stdin.isTTY) {
+    const shown = existing.length > 8 ? `${existing.slice(0, 8).join(', ')} and ${existing.length - 8} more` : existing.join(', ');
+    const a = await ask(`${existing.length} already in EAS: ${shown}. Update them or skip them? [U/s] `);
+    existingMode = /^s(kip)?$/i.test(a ?? '') ? 'skip' : 'update';
+  }
+  if (existingMode === 'skip') {
+    for (const p of plan) p.push = p.push.filter((v) => !inEas[p.environment][v.name]);
+  }
+  const toPush = plan.reduce((n, p) => n + p.push.length, 0);
+  const updates = existingMode === 'update' ? existing.length : 0;
+  if (existing.length) console.log(existingMode === 'skip' ? dim(`Skipping ${existing.length} already in EAS.`) : `Updating ${existing.length} already in EAS.`);
+
+  if (!toPush && !deletes) {
+    console.log('Nothing to push.');
+    return 0;
+  }
   if (!args.yes) {
-    if (!process.stdin.isTTY) usageError('No terminal to confirm on. Pass --yes to push without a prompt.');
     const where = plan.map((p) => p.environment).join(', ');
-    const a = await ask(`Push ${total} variable(s)${deletes ? ` and delete up to ${deletes}` : ''} in ${where}? Existing EAS variables with the same name are overwritten. [y/N] `);
+    const parts = [`${toPush - updates} new`, updates ? `${updates} updated` : '', deletes ? `up to ${deletes} deleted` : ''].filter(Boolean).join(', ');
+    const a = await ask(`Push ${toPush} variable(s) in ${where} (${parts})? [y/N] `);
     if (!/^y(es)?$/i.test(a ?? '')) {
       console.log('Cancelled. Nothing was pushed.');
       return 1;
     }
   }
 
-  const [eas, easPrefix] = easCommand();
   let failures = 0;
   let deleted = 0;
   for (const { environment, push, empty } of plan) {
     if (plan.length > 1) console.log(bold(`EAS "${environment}"`));
-    if (emptyMode === 'delete' && empty.length) {
-      const listed = run(eas, [...easPrefix, 'env:list', '--environment', environment, '--format', 'long', '--scope', 'project']);
-      if (listed.status !== 0) {
-        failures++;
-        console.log(`  ${red('✖')} Couldn’t list EAS variables for "${environment}", so nothing was deleted there.`);
-      } else {
-        const inEas = parseEasList(listed.stdout);
-        for (const name of empty) {
-          const envs = inEas[name];
-          if (!envs) { console.log(dim(`  · ${name}: not in EAS, nothing to delete`)); continue; }
-          const others = envs.filter((e) => e !== environment);
-          if (others.length) {
-            console.log(`  ${dim('!')} ${name}: kept, EAS shares it with ${others.join(', ')}. Delete it in the dashboard if you mean to.`);
-            continue;
-          }
-          const del = run(eas, [...easPrefix, 'env:delete', '--variable-name', name, '--variable-environment', environment, '--scope', 'project', '--non-interactive']);
-          if (del.status === 0) {
-            deleted++;
-            console.log(`  ${green('✓')} ${name} ${dim('[deleted]')}`);
-          } else {
-            failures++;
-            console.log(`  ${red('✖')} ${name}: ${`${del.stderr ?? ''}${del.stdout ?? ''}`.trim().split('\n').slice(-2).join(' ')}`);
-          }
+    const here = inEas[environment];
+    if (emptyMode === 'delete') {
+      for (const name of empty) {
+        const envs = here[name];
+        if (!envs) { console.log(dim(`  · ${name}: not in EAS, nothing to delete`)); continue; }
+        const others = envs.filter((e) => e !== environment);
+        if (others.length) {
+          console.log(`  ${dim('!')} ${name}: kept, EAS shares it with ${others.join(', ')}. Delete it in the dashboard if you mean to.`);
+          continue;
+        }
+        const del = run(eas, [...easPrefix, 'env:delete', '--variable-name', name, '--variable-environment', environment, '--scope', 'project', '--non-interactive']);
+        if (del.status === 0) {
+          deleted++;
+          console.log(`  ${green('✓')} ${name} ${dim('[deleted]')}`);
+        } else {
+          failures++;
+          console.log(`  ${red('✖')} ${name}: ${`${del.stderr ?? ''}${del.stdout ?? ''}`.trim().split('\n').slice(-2).join(' ')}`);
         }
       }
     }
     for (const { name, value, visibility } of push) {
+      // `env:create --force` on a variable EAS shares with other environments would narrow it to
+      // this one, so those environments would lose it. Detach this environment first (keeping the
+      // others' value), then create a variable of its own.
+      const others = (here[name] ?? []).filter((e) => e !== environment);
+      if (others.length) {
+        const detach = run(eas, [...easPrefix, 'env:update', '--variable-name', name, '--variable-environment', environment,
+          ...others.flatMap((e) => ['--environment', e]), '--scope', 'project', '--non-interactive']);
+        if (detach.status !== 0) {
+          failures++;
+          console.log(`  ${red('✖')} ${name}: couldn’t separate it from ${others.join(', ')}, so it wasn’t changed. ${`${detach.stderr ?? ''}${detach.stdout ?? ''}`.trim().split('\n').slice(-1)}`);
+          continue;
+        }
+      }
       const result = run(eas, [
         ...easPrefix, 'env:create',
         '--name', name, '--value', value,
@@ -380,7 +426,8 @@ async function main() {
         '--type', 'string', '--scope', 'project', '--force', '--non-interactive',
       ]);
       if (result.status === 0) {
-        console.log(`  ${green('✓')} ${name} ${dim(`[${visibility}]`)}`);
+        const how = here[name] ? (others.length ? `updated, now separate from ${others.join(', ')}` : 'updated') : 'new';
+        console.log(`  ${green('✓')} ${name} ${dim(`[${visibility}, ${how}]`)}`);
       } else {
         failures++;
         const output = redact(`${result.stderr ?? ''}${result.stdout ?? ''}`.trim() || String(result.error ?? ''), value);
@@ -393,7 +440,7 @@ async function main() {
     console.error(`\n${red('✖')} ${failures} step(s) failed. Are you logged in? Run: npx eas-cli login`);
     return 1;
   }
-  console.log(green(`\n✔ Pushed ${total} variable(s)${deleted ? `, deleted ${deleted},` : ''} in ${plan.length} environment(s).`) + dim(` Check with: ${plan.map((p) => `npx eas-cli env:list ${p.environment}`).join(' · ')}`));
+  console.log(green(`\n✔ Pushed ${toPush} variable(s)${deleted ? `, deleted ${deleted},` : ''} in ${plan.length} environment(s).`) + dim(` Check with: ${plan.map((p) => `npx eas-cli env:list ${p.environment}`).join(' · ')}`));
   return 0;
 }
 

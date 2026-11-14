@@ -1,6 +1,6 @@
 {
   "name": "env-to-eas",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Sync local .env files into EAS (Expo) environments, with secret/plaintext visibility handled for you",
   "type": "module",
   "bin": {

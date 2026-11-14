@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## [0.4.0] - 2026-11-14
+
+### Added
+- Choose what happens to variables already in EAS: `--existing update|skip`, or a prompt naming them. With `--yes` or no terminal they're updated, as before.
+- Each environment's variables are read once before anything changes; the push says whether each variable is new or updated, and the confirmation counts new, updated and deleted.
+
+### Fixed
+- Updating a variable that EAS shares with other environments took it away from them: `eas env:create --force` narrows the shared variable to the one environment. The tool now separates that environment first (`eas env:update`, the others keep their value) and then creates its own variable. If that step fails, the variable is left untouched.
+- Without a terminal and without `--yes`, it now stops before contacting EAS.
+- If EAS can't be read (for example, not logged in), nothing is changed.
+
 ## [0.3.0] - 2026-11-14
 
 ### Changed
