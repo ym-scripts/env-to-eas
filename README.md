@@ -16,21 +16,24 @@ Which .env file(s)?
   3) .env.production
 Choose one or more (e.g. 1,3 or 1-3 or all): 2,3
 .env.preview → EAS "preview"
-  · API_SECRET [secret]
+  · API_SECRET [sensitive]
   · EXPO_PUBLIC_API_URL [plaintext]
 
 .env.production → EAS "production"
-  · API_SECRET [secret]
+  · API_SECRET [sensitive]
   · EXPO_PUBLIC_API_URL [plaintext]
-  Skipped (empty): FEATURE_FLAG_X
+  Empty: FEATURE_FLAG_X
 
-Push 4 variable(s) to preview, production? Existing EAS variables with the same name are overwritten. [y/N]
+1 empty variable(s). EAS can't store empty values. Skip them, or delete them from EAS so it matches your files? [S/d] s
+Empty variables are skipped (pass --empty delete to remove them from EAS instead).
+Push 4 variable(s) in preview, production? Existing EAS variables with the same name are overwritten. [y/N]
 ```
 
 - **You choose the files.** Pass one or more, or pick from the `.env*` files in the folder: numbers (`1,3`), a range (`1-3`), names or `all` (`.env.example`, `.sample`, `.template` and `.dist` are ignored).
 - **Environments are guessed from each file's name**: `.env.production`/`.prod` → production, `.env.staging`/`.preview`/`.test` → preview, `.env.development`/`.dev`/`.local` → development. For a file with no hint you're asked, and can pick several. Or pass `--environment` (repeatable, a comma list, or `all`): then every file goes to every listed environment.
 - **Files sent to the same environment are merged** in the order given. A later file wins when both define a variable, and the plan says so (`API_URL: .env.production overrides .env`). An empty value never erases one set by an earlier file, so a shared `.env` plus a per-environment file works.
-- **Visibility is set for you.** `EXPO_PUBLIC_*` variables ship inside the app anyway, so they're `plaintext`; everything else is `secret`, which only builds can read.
+- **Visibility is set for you.** `EXPO_PUBLIC_*` variables ship inside the app anyway, so they're `plaintext`; everything else is `sensitive`: masked in logs and the EAS dashboard, but still readable by builds that run outside EAS's servers (local builds, GitHub runners), which can't read `secret` variables. Pass `--visibility secret` if every build runs on EAS.
+- **You choose what happens to empty variables.** EAS can't store an empty value, so an empty variable is either **skipped** (the default) or, with `--empty delete` or `d` at the prompt, the same-named variable is **deleted from EAS** so the environment matches your file. A variable that EAS shares with another environment is never deleted (deleting it would remove it from all of them); the tool says so instead.
 - **Values are never printed.** EAS error messages are redacted too.
 - **Asks first.** `--dry-run` changes nothing.
 
@@ -52,6 +55,7 @@ env-to-eas .env.shared -e all               # development, preview and productio
 env-to-eas .env --environment development
 env-to-eas .env.staging --only API_URL,SENTRY_DSN
 env-to-eas .env.production --exclude LOCAL_ONLY --dry-run
+env-to-eas .env.production --empty delete   # empties remove stale values from EAS
 ```
 
 ### Options
@@ -60,7 +64,8 @@ env-to-eas .env.production --exclude LOCAL_ONLY --dry-run
 | ------------------- | ------------------ | ------------------------------------------- |
 | `-e, --environment` | from each file name | `development`, `preview`, `production` or `all`. Repeatable or comma-separated |
 | `--public-prefix P` | `EXPO_PUBLIC_`     | Stored as plaintext. Repeatable.            |
-| `--visibility V`    | `secret`           | `secret` or `sensitive` for everything else |
+| `--visibility V`    | `sensitive`        | `sensitive` or `secret` for everything else |
+| `--empty MODE`      | asked, else `skip` | `skip` or `delete` for empty variables (see above) |
 | `--only K1,K2`      |                    | Only these variables                        |
 | `--exclude K1,K2`   |                    | Skip these. Repeatable.                     |
 | `-n, --dry-run`     |                    | Show the plan, push nothing                 |
@@ -68,7 +73,7 @@ env-to-eas .env.production --exclude LOCAL_ONLY --dry-run
 
 ### .env syntax
 
-`KEY=value`, `export KEY=value`, `# comments`, inline comments after unquoted values, `'single'` (literal), `"double"` (with `\n`, `\t`, `\"` escapes, may span lines) and `` `backtick` `` quotes. `${VAR}` references are pushed as written, not expanded. Empty values are skipped.
+`KEY=value`, `export KEY=value`, `# comments`, inline comments after unquoted values, `'single'` (literal), `"double"` (with `\n`, `\t`, `\"` escapes, may span lines) and `` `backtick` `` quotes. `${VAR}` references are pushed as written, not expanded. Empty values are skipped or deleted (`--empty`).
 
 ### Exit codes
 
@@ -81,7 +86,7 @@ npx github:ym-scripts/env-to-eas .env.production --yes
 npx github:ym-scripts/env-to-eas .env.preview .env.production --yes
 ```
 
-Set `EXPO_TOKEN` so EAS is logged in.
+Set `EXPO_TOKEN` so EAS is logged in. Without a terminal there's no prompt: empty variables are skipped unless you pass `--empty delete`.
 
 ## Development
 

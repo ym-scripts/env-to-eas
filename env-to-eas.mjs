@@ -6,7 +6,8 @@
  *
  * Values are never printed. Variables starting with a public prefix (EXPO_PUBLIC_ by
  * default) ship inside the app anyway, so they're stored as plaintext; everything else
- * is stored as an EAS secret, which only builds can read.
+ * is stored as sensitive: hidden in logs and masked in the dashboard, yet still readable by
+ * builds that run outside EAS (local or GitHub builds), which can't read EAS secrets.
  *
  * Copyright (c) 2026 Aghogho Meyoron. MIT License.
  */
@@ -16,7 +17,7 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 const EAS_ENVIRONMENTS = ['development', 'preview', 'production'];
 /** File-name hints: .env.<hint> → EAS environment. */
 const HINTS = {
@@ -38,7 +39,11 @@ Usage: env-to-eas [files...] [options]
                             suggests (.env.production → production), and you're asked
                             (one or more) for files with no hint.
       --public-prefix P     Prefix stored as plaintext (repeatable)  default: EXPO_PUBLIC_
-      --visibility V        Visibility for everything else: secret or sensitive  default: secret
+      --visibility V        Visibility for everything else: sensitive or secret  default: sensitive
+      --empty MODE          Empty variables: skip, or delete (remove the same-named
+                            variable from EAS so it matches the file; never one EAS
+                            shares with another environment). Asked when there are
+                            empty variables; skip with --yes or no terminal.
       --only K1,K2          Only these variables
       --exclude K1,K2       Skip these variables
   -n, --dry-run             Show what would be pushed, push nothing
@@ -66,8 +71,8 @@ function usageError(message) {
 
 function parseArgs(argv) {
   const args = {
-    files: [], environments: [], publicPrefixes: [], visibility: 'secret',
-    only: null, exclude: [], dryRun: false, yes: false,
+    files: [], environments: [], publicPrefixes: [], visibility: 'sensitive',
+    only: null, exclude: [], dryRun: false, yes: false, empty: null,
   };
   const value = (i, name) => {
     if (i >= argv.length || argv[i].startsWith('-')) usageError(`${name} needs a value`);
@@ -84,6 +89,7 @@ function parseArgs(argv) {
       case '-e': case '--environment': args.environments.push(...csv(value(++i, arg)).map((x) => x.toLowerCase())); break;
       case '--public-prefix': args.publicPrefixes.push(value(++i, arg)); break;
       case '--visibility': args.visibility = value(++i, arg); break;
+      case '--empty': args.empty = value(++i, arg).toLowerCase(); break;
       case '--only': args.only = csv(value(++i, arg)); break;
       case '--exclude': args.exclude.push(...csv(value(++i, arg))); break;
       case '-n': case '--dry-run': args.dryRun = true; break;
@@ -96,7 +102,8 @@ function parseArgs(argv) {
     }
   }
   if (!args.publicPrefixes.length) args.publicPrefixes = ['EXPO_PUBLIC_'];
-  if (!['secret', 'sensitive'].includes(args.visibility)) usageError('--visibility must be secret or sensitive');
+  if (args.empty && !['skip', 'delete'].includes(args.empty)) usageError('--empty must be skip or delete');
+  if (!['secret', 'sensitive'].includes(args.visibility)) usageError('--visibility must be sensitive or secret');
   if (args.environments.includes('all')) args.environments = [...EAS_ENVIRONMENTS];
   const bad = args.environments.filter((e) => !EAS_ENVIRONMENTS.includes(e));
   if (bad.length) usageError(`--environment must be ${EAS_ENVIRONMENTS.join(', ')} or all (got: ${bad.join(', ')})`);
@@ -163,6 +170,27 @@ function easCommand() {
   return probe.status === 0 ? ['eas', []] : ['npx', ['-y', 'eas-cli@latest']];
 }
 
+/**
+ * Reads `eas env:list --format long` output into { NAME: ['preview', 'production'] }: which
+ * environments each project variable is attached to. One EAS variable can serve several
+ * environments, and deleting it removes it from all of them.
+ */
+export function parseEasList(text) {
+  const out = {};
+  let name = null;
+  for (const raw of String(text).replace(/\x1b\[[0-9;]*m/g, '').split('\n')) {
+    const line = raw.trim();
+    const n = line.match(/^Name\s{2,}(.+)$/);
+    if (n) { name = n[1].trim(); continue; }
+    const e = line.match(/^Environments\s{2,}(.+)$/);
+    if (e && name) {
+      out[name] = e[1].trim() === '-' ? [] : e[1].split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+      name = null;
+    }
+  }
+  return out;
+}
+
 const redact = (text, value) => (value ? text.split(value).join('••••') : text);
 
 function ask(question) {
@@ -212,7 +240,7 @@ async function chooseMany(title, options, noTty) {
  * Turns files and their environments into one push list per environment. Files are merged in
  * order; a later file wins for a variable both define. `targets` is [{ file, vars, environments }].
  */
-export function buildPlan(targets, { only = null, exclude = [], publicPrefixes = ['EXPO_PUBLIC_'], visibility = 'secret' } = {}) {
+export function buildPlan(targets, { only = null, exclude = [], publicPrefixes = ['EXPO_PUBLIC_'], visibility = 'sensitive' } = {}) {
   const plan = [];
   for (const environment of EAS_ENVIRONMENTS) {
     const sources = targets.filter((t) => t.environments.includes(environment));
@@ -277,23 +305,36 @@ async function main() {
   for (const p of plan) {
     console.log(`${bold(p.files.join(' + '))} → ${bold(`EAS "${p.environment}"`)}${args.dryRun ? dim(' (dry run)') : ''}`);
     for (const v of p.push) console.log(`  · ${v.name} ${dim(`[${v.visibility}]${p.files.length > 1 ? ` from ${v.file}` : ''}`)}`);
-    if (p.empty.length) console.log(dim(`  Skipped (empty): ${p.empty.join(', ')}`));
+    if (p.empty.length) console.log(dim(`  Empty: ${p.empty.join(', ')}`));
     for (const o of p.overridden) console.log(dim(`  ${o.name}: ${o.by} overrides ${o.from}`));
     console.log('');
   }
 
+  const empties = plan.reduce((n, p) => n + p.empty.length, 0);
+  let emptyMode = args.empty ?? 'skip';
+  if (empties && !args.empty && !args.yes && !args.dryRun && process.stdin.isTTY) {
+    const a = await ask(`${empties} empty variable(s). EAS can't store empty values. Skip them, or delete them from EAS so it matches your files? [S/d] `);
+    emptyMode = /^d(elete)?$/i.test(a ?? '') ? 'delete' : 'skip';
+  }
+  if (empties) {
+    console.log(emptyMode === 'delete'
+      ? `Empty variables will be deleted from EAS where they exist for that environment only.`
+      : dim(`Empty variables are skipped${args.empty ? '' : ' (pass --empty delete to remove them from EAS instead)'}.`));
+  }
+  const deletes = emptyMode === 'delete' ? empties : 0;
+
   if (args.dryRun) {
-    console.log(`Dry run: ${total} variable(s) would be pushed to ${plan.length} environment(s). Nothing was changed.`);
+    console.log(`Dry run: ${total} variable(s) would be pushed${deletes ? ` and up to ${deletes} deleted` : ''} in ${plan.length} environment(s). Nothing was changed.`);
     return 0;
   }
-  if (!total) {
+  if (!total && !deletes) {
     console.log('Nothing to push.');
     return 0;
   }
   if (!args.yes) {
     if (!process.stdin.isTTY) usageError('No terminal to confirm on. Pass --yes to push without a prompt.');
     const where = plan.map((p) => p.environment).join(', ');
-    const a = await ask(`Push ${total} variable(s) to ${where}? Existing EAS variables with the same name are overwritten. [y/N] `);
+    const a = await ask(`Push ${total} variable(s)${deletes ? ` and delete up to ${deletes}` : ''} in ${where}? Existing EAS variables with the same name are overwritten. [y/N] `);
     if (!/^y(es)?$/i.test(a ?? '')) {
       console.log('Cancelled. Nothing was pushed.');
       return 1;
@@ -302,8 +343,35 @@ async function main() {
 
   const [eas, easPrefix] = easCommand();
   let failures = 0;
-  for (const { environment, push } of plan) {
+  let deleted = 0;
+  for (const { environment, push, empty } of plan) {
     if (plan.length > 1) console.log(bold(`EAS "${environment}"`));
+    if (emptyMode === 'delete' && empty.length) {
+      const listed = run(eas, [...easPrefix, 'env:list', '--environment', environment, '--format', 'long', '--scope', 'project']);
+      if (listed.status !== 0) {
+        failures++;
+        console.log(`  ${red('✖')} Couldn’t list EAS variables for "${environment}", so nothing was deleted there.`);
+      } else {
+        const inEas = parseEasList(listed.stdout);
+        for (const name of empty) {
+          const envs = inEas[name];
+          if (!envs) { console.log(dim(`  · ${name}: not in EAS, nothing to delete`)); continue; }
+          const others = envs.filter((e) => e !== environment);
+          if (others.length) {
+            console.log(`  ${dim('!')} ${name}: kept, EAS shares it with ${others.join(', ')}. Delete it in the dashboard if you mean to.`);
+            continue;
+          }
+          const del = run(eas, [...easPrefix, 'env:delete', '--variable-name', name, '--variable-environment', environment, '--scope', 'project', '--non-interactive']);
+          if (del.status === 0) {
+            deleted++;
+            console.log(`  ${green('✓')} ${name} ${dim('[deleted]')}`);
+          } else {
+            failures++;
+            console.log(`  ${red('✖')} ${name}: ${`${del.stderr ?? ''}${del.stdout ?? ''}`.trim().split('\n').slice(-2).join(' ')}`);
+          }
+        }
+      }
+    }
     for (const { name, value, visibility } of push) {
       const result = run(eas, [
         ...easPrefix, 'env:create',
@@ -322,10 +390,10 @@ async function main() {
   }
 
   if (failures) {
-    console.error(`\n${red('✖')} ${failures} variable(s) failed. Are you logged in? Run: npx eas-cli login`);
+    console.error(`\n${red('✖')} ${failures} step(s) failed. Are you logged in? Run: npx eas-cli login`);
     return 1;
   }
-  console.log(green(`\n✔ Pushed ${total} variable(s) to ${plan.length} environment(s).`) + dim(` Check with: ${plan.map((p) => `npx eas-cli env:list ${p.environment}`).join(' · ')}`));
+  console.log(green(`\n✔ Pushed ${total} variable(s)${deleted ? `, deleted ${deleted},` : ''} in ${plan.length} environment(s).`) + dim(` Check with: ${plan.map((p) => `npx eas-cli env:list ${p.environment}`).join(' · ')}`));
   return 0;
 }
 

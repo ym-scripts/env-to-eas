@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## [0.3.0] - 2026-11-14
+
+### Changed
+- Variables without the public prefix are now stored as **sensitive** instead of secret. Sensitive values are masked in logs and the dashboard but can be read by builds that run outside EAS's servers (local builds, GitHub runners), which can't read secrets. `--visibility secret` keeps the old behaviour.
+
+### Added
+- Choose what happens to empty variables. EAS can't store an empty value, so they're skipped by default; `--empty delete` (or `d` at the new prompt) deletes the same-named EAS variable so the environment matches the file. A variable EAS shares with other environments is kept, with a note, because deleting it would remove it everywhere.
+
 ## [0.2.0] - 2026-11-14
 
 ### Added

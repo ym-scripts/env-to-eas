@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, symlin
 import { tmpdir } from 'node:os';
 import { join, dirname, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseDotenv, guessEnvironment, parsePick, buildPlan } from '../env-to-eas.mjs';
+import { parseDotenv, guessEnvironment, parsePick, buildPlan, parseEasList } from '../env-to-eas.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const CLI = join(here, '..', 'env-to-eas.mjs');
@@ -16,14 +16,16 @@ EMPTY_ONE=
 FAIL_ME=boom-value
 `;
 
-function run(args, { app = true, files = { '.env.production': ENV } } = {}) {
+function run(args, { app = true, files = { '.env.production': ENV }, list = null } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'e2e-'));
   if (app) writeFileSync(join(dir, 'app.json'), '{}');
   for (const [n, c] of Object.entries(files)) writeFileSync(join(dir, n), c);
   const log = join(dir, 'eas.log');
+  const listFile = join(dir, 'eas-list.txt');
+  if (list) writeFileSync(listFile, list);
   const r = spawnSync(process.execPath, [CLI, ...args], {
     cwd: dir, encoding: 'utf8', input: '',
-    env: { ...process.env, NO_COLOR: '1', EAS_LOG: log, PATH: join(here, 'bin') + delimiter + process.env.PATH },
+    env: { ...process.env, NO_COLOR: '1', EAS_LOG: log, EAS_LIST: list ? listFile : '', PATH: join(here, 'bin') + delimiter + process.env.PATH },
   });
   const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [];
   return { code: r.status, out: r.stdout + r.stderr, calls };
@@ -47,8 +49,9 @@ test('dry run lists variables, pushes nothing, never prints values', () => {
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /\.env\.production → EAS "production"/);
   assert.match(r.out, /EXPO_PUBLIC_API_URL \[plaintext\]/);
-  assert.match(r.out, /API_SECRET \[secret\]/);
-  assert.match(r.out, /Skipped \(empty\): EMPTY_ONE/);
+  assert.match(r.out, /API_SECRET \[sensitive\]/);
+  assert.match(r.out, /Empty: EMPTY_ONE/);
+  assert.match(r.out, /Empty variables are skipped/);
   assert.doesNotMatch(r.out, /s3cr3t/);
   assert.equal(r.calls.length, 0);
 });
@@ -57,7 +60,7 @@ test('pushes with the right visibility and environment', () => {
   const r = run(['.env.production', '--yes', '--exclude', 'FAIL_ME']);
   assert.equal(r.code, 0, r.out);
   assert.equal(r.calls.length, 2);
-  assert.match(pushed(r.calls, 'API_SECRET'), /--value s3cr3t --environment production --visibility secret .*--force --non-interactive/);
+  assert.match(pushed(r.calls, 'API_SECRET'), /--value s3cr3t --environment production --visibility sensitive .*--force --non-interactive/);
   assert.match(pushed(r.calls, 'EXPO_PUBLIC_API_URL'), /--visibility plaintext/);
 });
 
@@ -135,7 +138,7 @@ test('plans per environment; a later file wins, an empty value never erases', ()
   assert.equal(prod.B.file, '.env.production');
   assert.equal(prod.C.value, 'keep');
   assert.equal(prod.EXPO_PUBLIC_X.visibility, 'plaintext');
-  assert.equal(prod.A.visibility, 'secret');
+  assert.equal(prod.A.visibility, 'sensitive');
   assert.deepEqual(plan[1].overridden, [{ name: 'B', from: '.env', by: '.env.production' }]);
   assert.equal(Object.fromEntries(plan[0].push.map((v) => [v.name, v.value])).B, 'base');
 });
@@ -148,7 +151,7 @@ test('several files go to the environments their names suggest', () => {
   assert.equal(r.calls.length, 4);
   assert.ok(r.calls.some((c) => /--name API_SECRET --value preview-secret --environment preview /.test(c)));
   assert.ok(r.calls.some((c) => /--name API_SECRET --value s3cr3t --environment production /.test(c)));
-  assert.match(r.out, /Pushed 4 variable\(s\) to 2 environment\(s\)/);
+  assert.match(r.out, /Pushed 4 variable\(s\) in 2 environment\(s\)/);
 });
 
 test('-e takes a list, repeats and all; every file goes to every environment', () => {
@@ -168,6 +171,60 @@ test('files merged into one environment show which one wins', () => {
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /\.env \+ \.env\.production → EAS "production"/);
   assert.match(r.out, /API_SECRET: \.env\.production overrides \.env/);
-  assert.match(r.out, /SHARED \[secret\] from \.env/);
+  assert.match(r.out, /SHARED \[sensitive\] from \.env/);
   assert.doesNotMatch(r.out, /s3cr3t|base/);
+});
+
+// What `eas env:list --format long` prints (labels are dimmed with ANSI codes on a terminal).
+const LIST = `Environment: production
+Variables for this project:
+\x1b[2mID          \x1b[22m  a1
+\x1b[2mName        \x1b[22m  EMPTY_ONE
+\x1b[2mValue       \x1b[22m  old
+\x1b[2mEnvironments\x1b[22m  production
+
+———
+
+ID            b2
+Name          SHARED_EMPTY
+Value         keep
+Environments  preview, production
+`;
+
+test('reads which environments each EAS variable belongs to', () => {
+  assert.deepEqual(parseEasList(LIST), { EMPTY_ONE: ['production'], SHARED_EMPTY: ['preview', 'production'] });
+  assert.deepEqual(parseEasList('No variables found for this environment.'), {});
+});
+
+test('empty variables are skipped by default, also with --yes', () => {
+  const r = run(['--yes', '--exclude', 'FAIL_ME'], { list: LIST });
+  assert.equal(r.code, 0, r.out);
+  assert.ok(!r.calls.some((c) => c.startsWith('env:delete') || c.startsWith('env:list')));
+  assert.ok(!r.calls.some((c) => c.includes('--name EMPTY_ONE ')));
+});
+
+test('--empty delete removes empty variables used only by that environment, keeps shared ones', () => {
+  const env = 'A=1\nEMPTY_ONE=\nSHARED_EMPTY=\nNOT_IN_EAS=\n';
+  const r = run(['.env.production', '--yes', '--empty', 'delete'], { files: { '.env.production': env }, list: LIST });
+  assert.equal(r.code, 0, r.out);
+  const deletes = r.calls.filter((c) => c.startsWith('env:delete'));
+  assert.equal(deletes.length, 1);
+  assert.match(deletes[0], /--variable-name EMPTY_ONE --variable-environment production --scope project --non-interactive/);
+  assert.match(r.out, /SHARED_EMPTY: kept, EAS shares it with preview/);
+  assert.match(r.out, /NOT_IN_EAS: not in EAS, nothing to delete/);
+  assert.match(r.out, /Pushed 1 variable\(s\), deleted 1, in 1 environment\(s\)/);
+});
+
+test('--empty delete in a dry run changes nothing and asks EAS nothing', () => {
+  const r = run(['--dry-run', '--empty', 'delete'], { list: LIST });
+  assert.equal(r.code, 0, r.out);
+  assert.equal(r.calls.length, 0);
+  assert.match(r.out, /and up to 1 deleted/);
+  assert.equal(run(['--dry-run', '--empty', 'maybe']).code, 2);
+});
+
+test('sensitive is the default visibility; --visibility secret still works', () => {
+  const r = run(['--yes', '--only', 'API_SECRET', '--visibility', 'secret']);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.calls[0], /--visibility secret /);
 });
